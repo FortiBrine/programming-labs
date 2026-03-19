@@ -7,48 +7,109 @@ import (
 )
 
 type CacheItem[R any] struct {
-	value     R
-	expiresAt time.Time
+	Value       R
+	AccessCount int
+	LastUsed    time.Time
+	ExpiresAt   time.Time
 }
 
-type Memoizer2[A comparable, R any] struct {
-	MaxSize      int
-	LiveDuration time.Duration
+type Memoizer[A comparable, R any] struct {
+	Capacity     int
+	Expiration   time.Duration
 	Policy       string
-	CustomPolicy func(cache map[A]CacheItem[R]) A
+	CustomPolicy func(storage map[A]CacheItem[R]) A
 }
 
-func (m *Memoizer2[A, R]) Memoize(f func(A) R) func(A) R {
-	cache := make(map[A]CacheItem[R])
+func (m *Memoizer[A, R]) Memoize(f func(A) R) func(A) R {
+	storage := make(map[A]CacheItem[R])
 
-	return func(arg A) R {
+	cleanupExpired := func() {
 		now := time.Now()
 
-		if m.LiveDuration != 0 {
-			for key, item := range cache {
-				if now.After(item.expiresAt) {
-					delete(cache, key)
+		if m.Expiration > 0 {
+			for key, item := range storage {
+				if now.After(item.ExpiresAt) {
+					delete(storage, key)
 				}
 			}
 		}
+	}
 
-		if item, ok := cache[arg]; ok {
-			return item.value
+	pruneOne := func() bool {
+		if len(storage) == 0 {
+			return false
 		}
 
-		result := f(arg)
+		var keyToRemove A
 
-		entry := CacheItem[R]{
-			value: result,
+		switch m.Policy {
+		case "LRU":
+			var oldestTime time.Time
+			first := true
+
+			for key, item := range storage {
+				if first || item.LastUsed.Before(oldestTime) {
+					oldestTime = item.LastUsed
+					keyToRemove = key
+					first = false
+				}
+			}
+		case "LFU":
+			var minCount int
+			first := true
+
+			for key, item := range storage {
+				if first || item.AccessCount < minCount {
+					minCount = item.AccessCount
+					keyToRemove = key
+					first = false
+				}
+			}
+		default:
+			if m.CustomPolicy == nil {
+				return false
+			}
+
+			keyToRemove = m.CustomPolicy(storage)
 		}
 
-		if m.LiveDuration != 0 {
-			entry.expiresAt = now.Add(m.LiveDuration)
+		delete(storage, keyToRemove)
+		return true
+	}
+
+	return func(key A) R {
+		now := time.Now()
+		cleanupExpired()
+
+		if item, ok := storage[key]; ok {
+			item.AccessCount++
+			item.LastUsed = now
+			storage[key] = item
+
+			return item.Value
 		}
 
-		cache[arg] = entry
+		value := f(key)
 
-		return result
+		newEntry := CacheItem[R]{
+			Value:       value,
+			LastUsed:    now,
+			AccessCount: 1,
+		}
+
+		if m.Expiration > 0 {
+			newEntry.ExpiresAt = now.Add(m.Expiration)
+		}
+
+		if m.Capacity > 0 && len(storage) >= m.Capacity {
+			if !pruneOne() {
+				return value
+			}
+		}
+
+		storage[key] = newEntry
+
+		return value
 	}
 }
 
@@ -61,16 +122,37 @@ func main() {
 		return 100 + float64(h.Sum32()%90000)/100
 	}
 
-	memoizer := Memoizer2[string, float64]{
-		MaxSize:      1,
-		Policy:       "LRU",
-		LiveDuration: time.Duration(5) * time.Second,
+	lruMemoizer := Memoizer[string, float64]{
+		Capacity: 2,
+		Policy:   "LRU",
 	}
 
-	memoizedF := memoizer.Memoize(getUserBalance)
+	lruMemoizedFunc := lruMemoizer.Memoize(getUserBalance)
 
-	fmt.Println(memoizedF("user1@fortibrine.me"))
-	fmt.Println(memoizedF("user1@fortibrine.me"))
-	fmt.Println(memoizedF("user2@fortibrine.me"))
+	fmt.Println(lruMemoizedFunc("user1@fortibrine.me"))
+	fmt.Println(lruMemoizedFunc("user1@fortibrine.me"))
+	fmt.Println(lruMemoizedFunc("user2@fortibrine.me"))
+	fmt.Println(lruMemoizedFunc("user3@fortibrine.me"))
+	fmt.Println(lruMemoizedFunc("user1@fortibrine.me"))
+
+	fmt.Println()
+
+	lfuMemoizer := Memoizer[string, float64]{
+		Capacity:   2,
+		Policy:     "LFU",
+		Expiration: 5 * time.Second,
+	}
+
+	lfuMemoizedFunc := lfuMemoizer.Memoize(getUserBalance)
+
+	fmt.Println(lfuMemoizedFunc("user1@fortibrine.me")) // 1
+	fmt.Println(lfuMemoizedFunc("user1@fortibrine.me")) // 2
+	fmt.Println(lfuMemoizedFunc("user2@fortibrine.me")) // 1
+	fmt.Println(lfuMemoizedFunc("user3@fortibrine.me")) // 1 (remove user2)
+	fmt.Println(lfuMemoizedFunc("user1@fortibrine.me")) // 3
+	fmt.Println(lfuMemoizedFunc("user2@fortibrine.me")) // 1
+
+	time.Sleep(6 * time.Second)
+	fmt.Println(lfuMemoizedFunc("user1@fortibrine.me")) // 1
 
 }
