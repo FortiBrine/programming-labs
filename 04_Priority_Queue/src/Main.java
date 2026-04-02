@@ -12,5 +12,7 @@ public class Main {
 
         System.out.println("peekHighest = " + q.peekHighest());
         System.out.println("peekLowest  = " + q.peekLowest());
+        System.out.println("peekOldest  = " + q.peekOldest());
+        System.out.println("peekNewest  = " + q.peekNewest());
     }
 }
