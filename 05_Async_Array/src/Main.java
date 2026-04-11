@@ -3,15 +3,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 
 public class Main {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         Pattern emailPattern = Pattern.compile(
                 "^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$"
         );
-
-        FutureMapper<String, Boolean> emailValidator = email ->
-                CompletableFuture.supplyAsync(() -> {
-                    return emailPattern.matcher(email).matches();
-                });
 
         List<String> emails = List.of(
                 "test@fortibrine.me",
@@ -19,11 +14,28 @@ public class Main {
                 "email@gmail.com"
         );
 
-        CompletableFuture<List<Boolean>> resultFuture =
-                AsyncArrayUtils.asyncMapFuture(emails, emailValidator);
+        FutureMapper<String, Boolean> emailValidator = email ->
+                CompletableFuture.supplyAsync(() -> {
+                    return emailPattern.matcher(email).matches();
+                });
 
-        List<Boolean> results = resultFuture.join();
-        System.out.println(results);
+        Thread.sleep(700);
+
+        AbortController futureController = new AbortController();
+        futureController.abort();
+
+        CompletableFuture<List<Boolean>> futureResult = AsyncArrayUtils.asyncMapFuture(
+                emails,
+                emailValidator,
+                futureController.signal()
+        );
+
+        futureResult
+                .thenAccept(result -> System.out.println("Future result: " + result))
+                .exceptionally(err -> {
+                    System.out.println("Future error: " + err.getCause().getMessage());
+                    return null;
+                });
 
     }
 }
